@@ -1,0 +1,33 @@
+name: Lightricks C2PA release check
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published Lightricks release tag to check, such as v0.1.0-lightricks.1
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  # Reads the build provenance of the release asset.
+  attestations: read
+
+jobs:
+  check:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      REPOSITORY: ${{ github.server_url }}/${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Check the release's tag, checksums and provenance, and resolve it in a clean SwiftPM consumer
+        run: Scripts/upgrade/check-release.sh "$TAG" "$REPOSITORY"

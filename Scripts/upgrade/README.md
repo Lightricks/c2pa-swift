@@ -1,7 +1,9 @@
 # Updating Lightricks' C2PA package
 
-[`upgrade.py`](upgrade.py) rebuilds the C2PA package of an upstream c2pa-swift tag for iOS, with a
-trimmed c2pa-rs library, so that the fork can publish it as a Lightricks release.
+The [upgrade workflow](../../.github/workflows/lightricks-upgrade.yml) accepts an upstream
+c2pa-swift tag and a tag for the matching Lightricks release. Changes to the workflow, rebuild
+scripts, or test project also run the current candidate in pull requests. The baseline,
+`CURRENT_SWIFT_TAG`, is the upstream Swift tag of the release in use.
 
 ## Inputs
 
@@ -25,10 +27,10 @@ only supplies `c2pa.h`; the library is rebuilt from c2pa-rs.
      --seed Scripts/upgrade/locks/<previous c2pa-rs tag>.Cargo.lock
    ```
 
-3. Commit both in a pull request.
+3. Commit both in a pull request, which runs the verification below.
 
-`upgrade.py drift` lists the updates available on top of the lockfile (`cargo update --dry-run`).
-It doesn't affect the build.
+The workflow also lists the updates available on top of the lockfile (`cargo update --dry-run`)
+in `dependency-drift.txt`. The report doesn't affect the build or the job result.
 
 ## Build
 
@@ -57,12 +59,10 @@ implementation, and the Swift signing and context APIs. The build:
   only linked. Swift imports `C2PAC` the same way with both.
 - Sorts the libraries in the XCFramework's `Info.plist`, which `xcodebuild` lists in a random
   order, and zips the XCFramework with sorted entries, fixed timestamps and fixed permissions, so
-  that the ZIP depends only on its contents. `build` prints its checksum.
+  that the ZIP depends only on its contents. Its checksum is in the job summary.
 
 The generated `Package.swift` declares only `.iOS(.v16)`, since the XCFramework has no macOS or
 Mac Catalyst slices.
-
-`upgrade.py release` writes the same manifest with the URL of the ZIP in a release of the fork.
 
 ## Verification
 
@@ -119,13 +119,53 @@ imports the rebuilt package as a normal SwiftPM consumer. It then:
    settings; and signing WebP and AVIF. Two tests document the trim and fail if PDF support or
    Rust thumbnail generation comes back.
 
-After `build`, [`upstream-tests.sh`](upstream-tests.sh) runs upstream's Library tests: it builds
-the Library project from the candidate's c2pa-swift checkout, with the C2PAC framework made from
-the rebuilt simulator libraries. Tests of the removed features (PDF, Rust thumbnails, the async
-HTTP stack) are skipped with the script's exclusion list; upstream v0.1.0 has no such tests, so
-the list is empty. Tests that need a signing server or the Secure Enclave skip themselves on a CI
-runner.
+The workflow then runs upstream's Library tests with [`upstream-tests.sh`](upstream-tests.sh):
+it builds the Library project from the candidate's c2pa-swift checkout, with the C2PAC framework
+made from the rebuilt simulator libraries. Tests of the removed features (PDF, Rust thumbnails,
+the async HTTP stack) are skipped with the script's exclusion list; upstream v0.1.0 has no such
+tests, so the list is empty. Tests that need a signing server or the Secure Enclave skip
+themselves on the runner.
 
 The test signing key is the upstream public ES256 fixture. Timestamps are verified against the
 self-signed DigiCert Trusted Root G4 in the test bundle. No production signing credentials are
-needed.
+needed. CI uses Xcode 26.6, the newest Xcode on GitHub's runners.
+
+If the candidate verification fails, CI repeats it against the baseline on the same runner. The
+job remains failed regardless of the baseline outcome; the baseline only shows whether the
+candidate or the runner, such as its connectivity to DigiCert, is at fault, so it doesn't run when
+the candidate passes. If both fail, check the test results and connectivity to DigiCert before
+retrying.
+
+## Release
+
+Pull request runs build and test only, and run the release check on upstream's v0.1.0 release
+without its SwiftPM consumer, to exercise the script. A manual run on `main` needs a new release
+tag, `<swift tag>-lightricks.<n>`, and fails before building if the tag has another form or
+exists in this repository already. Once verification passes, the `release` job checks that
+`Library/Sources` in the commit the workflow runs on matches the tested c2pa-swift tag, attests the
+ZIP's build provenance, and uploads the `verified-c2pa-release` artifact: the ZIP, its checksum,
+the Rust lockfile, the upstream revisions and the fork commit, and the SwiftPM manifest with the
+fork's release URL. Only that job can write attestations, and publishing is manual:
+
+1. On `main`, commit the generated `Package.swift` on top of the commit that the workflow ran on,
+   push it, and tag it, for example `v0.1.0-lightricks.1`.
+2. Create the GitHub release for the tag and attach `C2PAC.xcframework.zip` and
+   `C2PAC.xcframework.checksum` from the artifact.
+3. The [release check](../../.github/workflows/lightricks-release-check.yml) runs when the release
+   is published, and can be run manually with the tag. It runs
+   [`check-release.sh`](check-release.sh), which checks that the tag is on `main`, compares the
+   published ZIP's checksum with `Package.swift` and the checksum asset, and checks with
+   `gh attestation verify` that the upgrade workflow on `main` built the ZIP from an ancestor of the
+   tag with the same `Library/Sources`. It then checks that the manifest declares only iOS,
+   resolves the package by URL and exact version in a clean SwiftPM consumer, and builds the
+   consumer for iOS devices. Run it locally with `Scripts/upgrade/check-release.sh <tag>`, signed
+   in to `gh`.
+4. Once the release is in use, update `CURRENT_SWIFT_TAG` in the workflow.
+
+### Versions
+
+Releases are named `<upstream version>-lightricks.<n>`. In SemVer, a pre-release sorts below its
+release: `0.1.0-lightricks.1` < `0.1.0`. A range such as `from: "0.1.0-lightricks.1"` would
+therefore resolve to upstream's `0.1.0` if it were ever published in this repository, and
+`0.1.0-lightricks.2` sorts above `0.1.0-lightricks.1` but below `0.1.0`. Consumers must pin the
+release with `exact:` (Xcode's "Exact Version").
