@@ -1,0 +1,16 @@
+{
+  "c2pa-swift": {
+    "v0.0.16": {
+      "commit": "cbc23123d5a76ac621aa35fcf288fbb06e67b832",
+      "c2pac_zip_sha256": "45cd8beea2b1b0d4f0e000c88d98f94d0de9a671debd3bf3ac58f36a650852da"
+    },
+    "v0.1.0": {
+      "commit": "901cfbf371a5c1caaf2674732f6e282294388ab5",
+      "c2pac_zip_sha256": "fe6c85697cdc7d58c608a9d3d2a0e458efb2fdf8260b6727ee05dc519bca3885"
+    }
+  },
+  "c2pa-rs": {
+    "c2pa-c-ffi-v0.91.7": {"commit": "a5ce78b78a22d2ed8186b5ee3fe5f02b275822e0"},
+    "c2pa-c-ffi-v0.92.0": {"commit": "83eba34d1a0b6be4d2484fc5d7b4cf11c030b694"}
+  }
+}
