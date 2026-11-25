@@ -30,5 +30,5 @@
   thumbnail, a transparent PNG with a PNG thumbnail, and a HEIC with a BMFF hash. They contain no
   user or production data. Regenerate them only to cover a different pre-upgrade release, since
   the point is to load archives made by an older version.
-- The images that are signed are generated at runtime (see `SampleImage`), so the large inputs
-  aren't part of the repository.
+- The images that are signed and the videos are generated at runtime (see `SampleImage` and
+  `SampleVideo`), so the large inputs aren't part of the repository.

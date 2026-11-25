@@ -77,8 +77,8 @@ imports the rebuilt package as a normal SwiftPM consumer. It then:
 2. Runs the tests on an iPhone simulator of the newest installed iOS runtime, unless a destination
    is given. The tests describe the supported usage profile of this build (see `SigningProfile`):
    signing exports with a live RFC 3161 timestamp from DigiCert, a network allowlist that only
-   permits the timestamp authority, thumbnails made by the caller, and parent ingredients from
-   archives written by the previous release (v0.0.16). For images, that is a
+   permits the timestamp authority, thumbnails made by the caller, parent ingredients from archives
+   written by the previous release (v0.0.16), and low-memory video signing. For images, that is a
    context that allows only `timestamp.digicert.com` with an explicit timestamp request timeout, no
    custom HTTP resolver, the async signer with DigiCert's TSA, and a 1024 px ImageIO thumbnail
    (JPEG, or PNG if the image has alpha). The 1600×1200 images are generated at runtime. For JPEG,
@@ -87,6 +87,29 @@ imports the rebuilt package as a normal SwiftPM consumer. It then:
    manifest spans several APP11 segments. They also add parent ingredients from archives written
    with c2pa-swift v0.0.16 and check the ingredients' own validation results, and check that signing
    fails without connecting when the TSA host isn't allowed.
+
+   `VideoSigningTests` covers the recommended way to sign large videos with this build,
+   `SigningProfile.sign(videoAt:)`: the image setup with a thumbnail from AVAssetImageGenerator,
+   plus two settings that keep memory flat at any video size:
+
+   - Read the source and write the destination through `FileStream`s, which use POSIX calls.
+     `Stream(readFrom:)` returns autoreleased `Data` per read, which a dispatch queue frees only
+     when signing ends.
+   - Set `backing_store_memory_threshold_in_mb` to 1 in the context, since c2pa-rs otherwise
+     copies videos up to 512 MB into memory.
+
+   Without either, signing a 1.1 GB video added over 1 GB of memory; with both, about 34 MB at
+   37 MB, 371 MB and 1.1 GB.
+
+   The videos are written at runtime with AVAssetWriter, as video exports typically are: a QuickTime
+   H.264 movie with AAC audio, a 10-bit HLG HEVC movie, an MP4, and a movie whose parent is the
+   archive of a signed movie. The tests require a BMFF hash, a trusted timestamp and the parent's
+   valid manifest, check that AVFoundation decodes every frame of the signed file with the source's
+   duration and tracks, and that changing a media byte fails validation. A 320 MB video, a repeated
+   clip exported without re-encoding, must sign and read back on a dispatch queue with peak memory
+   rising by less than 100 MB. The signing bound catches both settings regressing. The read bound
+   doesn't catch reading through `Stream(readFrom:)`, since that only grows with the file above
+   512 MB. A 4K performance measurement runs only locally, with `TEST_RUNNER_C2PA_VIDEO_PERF=1`.
 
 The test signing key is the upstream public ES256 fixture. Timestamps are verified against the
 self-signed DigiCert Trusted Root G4 in the test bundle. No production signing credentials are
