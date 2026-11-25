@@ -63,3 +63,31 @@ The generated `Package.swift` declares only `.iOS(.v16)`, since the XCFramework 
 Mac Catalyst slices.
 
 `upgrade.py release` writes the same manifest with the URL of the ZIP in a release of the fork.
+
+## Verification
+
+[`verify.sh`](verify.sh) stages the [test project](../../UpgradeVerification/Package.swift), which
+imports the rebuilt package as a normal SwiftPM consumer. It then:
+
+1. Builds the [DeviceLinkCheck](../../UpgradeVerification/DeviceLinkCheck) app in Release for iOS
+   devices and for arm64 and x86_64 simulators. Building a package library only compiles it;
+   linking an app resolves every symbol the static library needs, so a missing symbol or system
+   library fails the job. The script then checks the architectures, platform and C2PA symbols of
+   the linked apps.
+2. Runs the tests on an iPhone simulator of the newest installed iOS runtime, unless a destination
+   is given. The tests describe the supported usage profile of this build (see `SigningProfile`):
+   signing exports with a live RFC 3161 timestamp from DigiCert, a network allowlist that only
+   permits the timestamp authority, thumbnails made by the caller, and parent ingredients from
+   archives written by the previous release (v0.0.16). For images, that is a
+   context that allows only `timestamp.digicert.com` with an explicit timestamp request timeout, no
+   custom HTTP resolver, the async signer with DigiCert's TSA, and a 1024 px ImageIO thumbnail
+   (JPEG, or PNG if the image has alpha). The 1600×1200 images are generated at runtime. For JPEG,
+   PNG, transparent PNG, HEIC and TIFF, the tests require a validated and trusted DigiCert
+   timestamp, decode the signed image with ImageIO, check the thumbnail, and check that the JPEG
+   manifest spans several APP11 segments. They also add parent ingredients from archives written
+   with c2pa-swift v0.0.16 and check the ingredients' own validation results, and check that signing
+   fails without connecting when the TSA host isn't allowed.
+
+The test signing key is the upstream public ES256 fixture. Timestamps are verified against the
+self-signed DigiCert Trusted Root G4 in the test bundle. No production signing credentials are
+needed.
