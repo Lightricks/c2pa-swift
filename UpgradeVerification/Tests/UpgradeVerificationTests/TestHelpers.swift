@@ -14,7 +14,7 @@ extension XCTestCase {
     }
 
     /// Returns the URL of `path` in the test bundle's `Fixtures` directory, for example
-    /// `DigiCertTrustedRootG4.pem`.
+    /// `c2pa-rs/CACA.jpg`.
     func fixture(_ path: String) throws -> URL {
         let components = path.split(separator: "/").map(String.init)
         let subdirectory = (["Fixtures"] + components.dropLast()).joined(separator: "/")

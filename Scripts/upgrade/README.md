@@ -111,6 +111,21 @@ imports the rebuilt package as a normal SwiftPM consumer. It then:
    doesn't catch reading through `Stream(readFrom:)`, since that only grows with the file above
    512 MB. A 4K performance measurement runs only locally, with `TEST_RUNNER_C2PA_VIDEO_PERF=1`.
 
+   `PublicAPITests` covers common uses beyond that profile, offline and without timestamps:
+   reading a c2pa-rs manifest chain from a file and from memory, with its JSON, detailed JSON and
+   thumbnails; the digital source type of an AI-generated parent ingredient; ingredients from
+   streams, resources and Builder archives; a sidecar manifest with a remote URL; Rust signers for
+   ES256, ES384, PS256 and Ed25519, and a callback signer; trust anchors from JSON and TOML
+   settings; and signing WebP and AVIF. Two tests document the trim and fail if PDF support or
+   Rust thumbnail generation comes back.
+
+After `build`, [`upstream-tests.sh`](upstream-tests.sh) runs upstream's Library tests: it builds
+the Library project from the candidate's c2pa-swift checkout, with the C2PAC framework made from
+the rebuilt simulator libraries. Tests of the removed features (PDF, Rust thumbnails, the async
+HTTP stack) are skipped with the script's exclusion list; upstream v0.1.0 has no such tests, so
+the list is empty. Tests that need a signing server or the Secure Enclave skip themselves on a CI
+runner.
+
 The test signing key is the upstream public ES256 fixture. Timestamps are verified against the
 self-signed DigiCert Trusted Root G4 in the test bundle. No production signing credentials are
 needed.
