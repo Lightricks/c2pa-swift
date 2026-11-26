@@ -1,0 +1,172 @@
+name: Lightricks C2PA upgrade
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/lightricks-upgrade.yml'
+      - 'Scripts/upgrade/**'
+      - 'TestShared/Resources/es256_*'
+      - 'UpgradeVerification/**'
+  workflow_dispatch:
+    inputs:
+      swift_tag:
+        description: Upstream c2pa-swift tag to rebuild (pinned in Scripts/upgrade/upstream.json)
+        type: string
+        required: true
+        default: v0.1.0
+      release_tag:
+        description: New tag for the release in the Lightricks fork, <swift_tag>-lightricks.<n>
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+# A new push or manual run supersedes the running one on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SWIFT_TAG: ${{ inputs.swift_tag || 'v0.1.0' }}
+  RELEASE_TAG: ${{ inputs.release_tag }}
+  # Only manual runs on main produce a release candidate. Other runs build and test only.
+  PUBLISH: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+
+jobs:
+  verify:
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      CURRENT_SWIFT_TAG: v0.0.16
+      # The newest Xcode on GitHub's macOS runners.
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Check runner and toolchain
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          rustup --version
+
+      - name: Check the release tag before building
+        if: env.PUBLISH == 'true'
+        run: python3 Scripts/upgrade/upgrade.py check-release-tag "$SWIFT_TAG" "$RELEASE_TAG"
+
+      - name: Run the release check on upstream's release
+        # Exercises check-release.sh on a published release. Upstream's isn't a Lightricks release,
+        # so the iOS-only, checksum asset and provenance checks don't apply, and the SwiftPM
+        # consumer is skipped to keep the job short.
+        env:
+          CHECK_IOS_ONLY: 0
+          CHECK_CONSUMER: 0
+        run: Scripts/upgrade/check-release.sh v0.1.0 https://github.com/contentauth/c2pa-swift
+
+      - name: Prepare the candidate and generate the upgrade report
+        run: |
+          mkdir -p "$RUNNER_TEMP/c2pa"
+          python3 Scripts/upgrade/upgrade.py prepare "$CURRENT_SWIFT_TAG" "$RUNNER_TEMP/c2pa/current"
+          python3 Scripts/upgrade/upgrade.py prepare "$SWIFT_TAG" "$RUNNER_TEMP/c2pa/candidate"
+          python3 Scripts/upgrade/upgrade.py report \
+            "$RUNNER_TEMP/c2pa/current" "$RUNNER_TEMP/c2pa/candidate" \
+            > "$RUNNER_TEMP/c2pa/upgrade-report.txt"
+          cat "$RUNNER_TEMP/c2pa/candidate/versions.txt" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build and validate the candidate slices with the committed lockfile
+        run: |
+          python3 Scripts/upgrade/upgrade.py build "$RUNNER_TEMP/c2pa/candidate"
+          checksum="$(cat "$RUNNER_TEMP/c2pa/candidate/verified-package-input/C2PAC.xcframework.checksum")"
+          echo "C2PAC.xcframework.zip SHA-256: \`$checksum\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report dependency updates available on top of the lockfile
+        continue-on-error: true
+        run: |
+          python3 Scripts/upgrade/upgrade.py drift "$RUNNER_TEMP/c2pa/candidate" \
+            > "$RUNNER_TEMP/c2pa/dependency-drift.txt" 2>&1
+
+      - name: Link the DeviceLinkCheck app and run the Swift tests with mandatory live DigiCert timestamping
+        id: candidate_tests
+        run: |
+          Scripts/upgrade/verify.sh "$RUNNER_TEMP/c2pa/candidate" "$PWD/UpgradeVerification" \
+            "$RUNNER_TEMP/c2pa/candidate.xcresult"
+
+      - name: Run upstream's Library tests against the rebuilt library
+        run: |
+          Scripts/upgrade/upstream-tests.sh "$RUNNER_TEMP/c2pa/candidate" \
+            "$RUNNER_TEMP/c2pa/upstream-tests.xcresult"
+
+      # The baseline only tells whether a failure comes from the candidate or from the runner,
+      # such as DigiCert being unreachable. Running it on every run would double the job's time.
+      - name: Compare the current package if candidate verification fails
+        if: failure() && steps.candidate_tests.outcome == 'failure'
+        run: |
+          python3 Scripts/upgrade/upgrade.py build "$RUNNER_TEMP/c2pa/current"
+          if Scripts/upgrade/verify.sh "$RUNNER_TEMP/c2pa/current" "$PWD/UpgradeVerification" \
+            "$RUNNER_TEMP/c2pa/current.xcresult"; then
+            echo 'The current package passed. Inspect the candidate build or test failure.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Both packages failed verification. Check the two logs and runner connectivity to DigiCert.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Save upgrade report and test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: upgrade-diagnostics
+          path: |
+            ${{ runner.temp }}/c2pa/upgrade-report.txt
+            ${{ runner.temp }}/c2pa/dependency-drift.txt
+            ${{ runner.temp }}/c2pa/*.xcresult
+
+      # Every run keeps its build, so that the ZIPs of two runs can be compared.
+      - name: Save the verified build for the release job
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verified-candidate
+          path: |
+            ${{ runner.temp }}/c2pa/candidate/versions.txt
+            ${{ runner.temp }}/c2pa/candidate/swift/Package.swift
+            ${{ runner.temp }}/c2pa/candidate/swift/Library/Sources/
+            ${{ runner.temp }}/c2pa/candidate/verified-package-input/*.*
+          if-no-files-found: error
+
+  # A separate job, so that only manual runs on main can attest build provenance.
+  release:
+    needs: verify
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: verified-candidate
+          path: ${{ runner.temp }}/c2pa/candidate
+
+      - name: Prepare the verified release asset and matching SwiftPM manifest
+        run: |
+          python3 Scripts/upgrade/upgrade.py release "$RUNNER_TEMP/c2pa/candidate" "$RELEASE_TAG"
+
+      - name: Attest that this run built the release asset
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/c2pa/candidate/release/C2PAC.xcframework.zip
+
+      - name: Save the release candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verified-c2pa-release
+          path: ${{ runner.temp }}/c2pa/candidate/release/
+          if-no-files-found: error
